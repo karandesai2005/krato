@@ -3,8 +3,9 @@ package agent.process
 import future.keywords.if
 
 # Rule 1 — shell spawned inside a container
-deny[msg] {
+deny[msg] if {
     input.type == "process_exec"
+    input.container.pod_name != ""
     shell_binary(input.process.binary)
     msg := sprintf(
         "Shell spawned in pod [%s/%s] — binary: %s parent: %s",
@@ -18,9 +19,10 @@ shell_binary(b) if b == "/bin/sh"
 shell_binary(b) if b == "/usr/bin/bash"
 shell_binary(b) if b == "/usr/bin/sh"
 
-# Rule 2 — network tool spawned by app process
-deny[msg] {
+# Rule 2 — network tool spawned by app process inside a container
+deny[msg] if {
     input.type == "process_exec"
+    input.container.pod_name != ""
     network_tool(input.process.binary)
     app_process(input.process.parent_name)
     msg := sprintf(
@@ -39,8 +41,9 @@ app_process(p) if p == "node"
 app_process(p) if p == "python3"
 
 # Rule 3 — container escape attempt
-deny[msg] {
+deny[msg] if {
     input.type == "process_exec"
+    input.container.pod_name != ""
     escape_tool(input.process.binary)
     msg := sprintf(
         "CONTAINER ESCAPE — [%s] in pod [%s/%s]",

