@@ -5,6 +5,7 @@ go 1.26.4
 require (
 	github.com/cilium/ebpf v0.21.0
 	github.com/cilium/tetragon/api v1.7.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/open-policy-agent/opa v0.63.0
 	google.golang.org/grpc v1.80.0
 )

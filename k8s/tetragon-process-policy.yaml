@@ -1,0 +1,21 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: krato-process
+spec:
+  kprobes:
+  - call: "security_bprm_execve"
+    return: true
+    syscall: true
+    args:
+    - index: 0
+      type: "string"
+    selectors:
+    - matchPIDs:
+      - operator: "NotIn"
+        values:
+        - 0
+  - call: "execve"
+    syscall: true
+  podSelector: {}
+  containerSelector: {}

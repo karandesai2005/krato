@@ -12,13 +12,12 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// Listener connects to Tetragon gRPC and processes events
+// Listener connects to Tetragon gRPC and processes events.
 type Listener struct {
 	addr   string
 	engine *opa.Engine
 }
 
-// NewListener creates a new listener
 func NewListener(addr string, engine *opa.Engine) *Listener {
 	return &Listener{
 		addr:   addr,
@@ -26,7 +25,6 @@ func NewListener(addr string, engine *opa.Engine) *Listener {
 	}
 }
 
-// Start connects and streams events
 func (l *Listener) Start(ctx context.Context) error {
 	conn, err := grpc.NewClient(
 		l.addr,
@@ -64,7 +62,6 @@ func (l *Listener) Start(ctx context.Context) error {
 	}
 }
 
-// handleEvent processes each Tetragon event
 func (l *Listener) handleEvent(event *tetragonAPI.GetEventsResponse) {
 	input := buildInput(event)
 	if input == nil {
@@ -74,9 +71,9 @@ func (l *Listener) handleEvent(event *tetragonAPI.GetEventsResponse) {
 	var query string
 	switch input["type"] {
 	case "process_exec":
-		query = "agent.process.deny"
+		query = "agent.process.violation"
 	case "network_connect":
-		query = "agent.network.deny"
+		query = "agent.network.violation"
 	default:
 		return
 	}
@@ -94,44 +91,52 @@ func (l *Listener) handleEvent(event *tetragonAPI.GetEventsResponse) {
 	}
 }
 
-// buildInput converts protobuf → OPA-friendly map
 func buildInput(event *tetragonAPI.GetEventsResponse) map[string]interface{} {
 	switch e := event.Event.(type) {
 
 	case *tetragonAPI.GetEventsResponse_ProcessExec:
 		exec := e.ProcessExec
-		if exec.Process == nil {
+		if exec == nil {
 			return nil
+		}
+
+		proc := exec.Process
+		if proc == nil {
+			return nil
+		}
+
+		ns := ""
+		podName := ""
+		containerName := ""
+		if proc.Pod != nil {
+			ns = proc.Pod.Namespace
+			podName = proc.Pod.Name
+			if proc.Pod.Container != nil {
+				containerName = proc.Pod.Container.Name
+			}
 		}
 
 		parentName := ""
 		parentPID := uint32(0)
 		if exec.Parent != nil {
 			parentName = exec.Parent.Binary
-			parentPID = exec.Parent.Pid.Value
-		}
-
-		var namespace, podName, containerName string
-		if exec.Process.Pod != nil {
-			namespace = exec.Process.Pod.Namespace
-			podName = exec.Process.Pod.Name
-			if exec.Process.Pod.Container != nil {
-				containerName = exec.Process.Pod.Container.Name
+			if exec.Parent.Pid != nil {
+				parentPID = exec.Parent.Pid.Value
 			}
 		}
 
 		return map[string]interface{}{
 			"type": "process_exec",
 			"process": map[string]interface{}{
-				"binary":      exec.Process.Binary,
-				"arguments":   exec.Process.Arguments,
-				"pid":         float64(exec.Process.Pid.Value),
-				"uid":         float64(exec.Process.Uid.Value),
+				"binary":      proc.Binary,
+				"arguments":   proc.Arguments,
+				"pid":         getPid(proc),
+				"uid":         getUid(proc),
 				"parent_name": parentName,
 				"parent_pid":  float64(parentPID),
 			},
 			"container": map[string]interface{}{
-				"namespace": namespace,
+				"namespace": ns,
 				"pod_name":  podName,
 				"name":      containerName,
 			},
@@ -139,7 +144,7 @@ func buildInput(event *tetragonAPI.GetEventsResponse) map[string]interface{} {
 
 	case *tetragonAPI.GetEventsResponse_ProcessKprobe:
 		kprobe := e.ProcessKprobe
-		if kprobe.Process == nil {
+		if kprobe == nil || kprobe.Process == nil {
 			return nil
 		}
 
@@ -157,8 +162,8 @@ func buildInput(event *tetragonAPI.GetEventsResponse) map[string]interface{} {
 			switch v := arg.Arg.(type) {
 			case *tetragonAPI.KprobeArgument_SockaddrArg:
 				if sa := v.SockaddrArg; sa != nil {
-					destIP = sa.GetAddr()      // Fixed
-					destPort = float64(sa.GetPort()) // Fixed
+					destIP = sa.GetAddr()
+					destPort = float64(sa.GetPort())
 				}
 			case *tetragonAPI.KprobeArgument_BytesArg:
 				if len(v.BytesArg) > 0 {
@@ -171,7 +176,7 @@ func buildInput(event *tetragonAPI.GetEventsResponse) map[string]interface{} {
 			"type": "network_connect",
 			"process": map[string]interface{}{
 				"binary": kprobe.Process.Binary,
-				"pid":    float64(kprobe.Process.Pid.Value),
+				"pid":    float64(kprobe.Process.Pid.GetValue()),
 			},
 			"network": map[string]interface{}{
 				"dest_ip":   destIP,
@@ -188,17 +193,67 @@ func buildInput(event *tetragonAPI.GetEventsResponse) map[string]interface{} {
 	return nil
 }
 
-// printAlert prints violation
-func printAlert(input map[string]interface{}, messages []string) {
+func getPid(p *tetragonAPI.Process) float64 {
+	if p != nil && p.Pid != nil {
+		return float64(p.Pid.Value)
+	}
+	return 0
+}
+
+func getUid(p *tetragonAPI.Process) float64 {
+	if p != nil && p.Uid != nil {
+		return float64(p.Uid.Value)
+	}
+	return 0
+}
+
+func severityStyle(severity string) string {
+	switch severity {
+	case "CRITICAL":
+		return "\033[91m\033[1m"
+	case "HIGH":
+		return "\033[31m"
+	case "MEDIUM":
+		return "\033[33m"
+	default:
+		return "\033[31m"
+	}
+}
+
+func highestSeverity(violations []opa.Violation) string {
+	order := map[string]int{
+		"CRITICAL": 3,
+		"HIGH":     2,
+		"MEDIUM":   1,
+	}
+	best := ""
+	bestRank := 0
+	for _, v := range violations {
+		rank := order[v.Severity]
+		if rank > bestRank {
+			bestRank = rank
+			best = v.Severity
+		}
+	}
+	if best == "" {
+		return "HIGH"
+	}
+	return best
+}
+
+func printAlert(input map[string]interface{}, violations []opa.Violation) {
 	eventType := input["type"].(string)
+	topSeverity := highestSeverity(violations)
+	style := severityStyle(topSeverity)
 
 	fmt.Println()
-	fmt.Println("🚨 \033[31m\033[1m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m")
-	fmt.Printf("   \033[31m\033[1mALERT — %s\033[0m\n", eventType)
-	fmt.Println("🚨 \033[31m\033[1m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m")
+	fmt.Printf("🚨 %s━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n", style)
+	fmt.Printf("   %sALERT — %s [%s]\033[0m\n", style, eventType, topSeverity)
+	fmt.Printf("🚨 %s━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n", style)
 
-	for _, msg := range messages {
-		fmt.Printf("   → %s\n", msg)
+	for _, v := range violations {
+		msgStyle := severityStyle(v.Severity)
+		fmt.Printf("   %s[%s]\033[0m → %s\n", msgStyle, v.Severity, v.Msg)
 	}
 
 	if proc, ok := input["process"].(map[string]interface{}); ok {
@@ -219,10 +274,9 @@ func printAlert(input map[string]interface{}, messages []string) {
 		fmt.Printf("\n   raw event:\n%s\n", string(raw))
 	}
 
-	fmt.Println("\033[31m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m")
+	fmt.Printf("%s━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n", style)
 }
 
-// printClean prints allowed events (low noise)
 func printClean(input map[string]interface{}) {
 	proc, ok := input["process"].(map[string]interface{})
 	if !ok {
