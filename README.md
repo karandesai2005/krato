@@ -37,31 +37,7 @@ Three detection layers:
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────┐
-│                  Linux Kernel                        │
-│                                                      │
-│   execve() ──┐                                       │
-│   connect() ─┤──► Tetragon eBPF programs             │
-│   write()  ──┘         │                             │
-│                        │ structured JSON events       │
-└────────────────────────┼─────────────────────────────┘
-                         │ gRPC stream
-                         ▼
-┌──────────────────────────────────────────────────────┐
-│                  Go Agent                            │
-│                                                      │
-│   Tetragon Listener                                  │
-│        │                                             │
-│        ▼                                             │
-│   Event Parser ──► OPA Engine ◄── policies/          │
-│                        │           process.rego       │
-│                        │           network.rego       │
-│                        ▼                             │
-│                    Alerter                           │
-│              (colored terminal output)               │
-└──────────────────────────────────────────────────────┘
-```
+<img width="805" height="741" alt="image" src="https://github.com/user-attachments/assets/5acda02e-f8b0-48dd-961a-6b552ea34402" />
 
 ---
 
