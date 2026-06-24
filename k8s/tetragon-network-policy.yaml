@@ -1,0 +1,15 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: network-dpi
+spec:
+  kprobes:
+    - call: "tcp_sendmsg"
+      syscall: false
+      args:
+        - index: 0
+          type: "sock"
+        - index: 1
+          type: "msghdr"
+        - index: 2
+          type: "size_t"
